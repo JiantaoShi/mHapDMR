@@ -1,0 +1,34 @@
+Package: mHapDMR
+Title: Differential M-score Analysis from mHap Files Using DSS
+Version: 0.1.0
+Authors@R: person("Jiantao", "Jiang", email = "jiang@example.com",
+    role = c("aut", "cre"))
+Description: Reads mHap-format sequencing files (bgzipped, tabix-indexed) and
+    CpG position files to compute M-score statistics for genomic intervals
+    stored as GRanges. M-score is defined as the weighted methylation level
+    across all reads in a region (sum of per-read CpG-weighted methylation
+    divided by total CpG count). The package transforms M-score into DSS-
+    compatible input via the kappa/Y' substitution and performs differential
+    M-score analysis using DSS::DMLfit.multiFactor().
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Imports:
+    GenomicRanges,
+    IRanges,
+    S4Vectors,
+    Rsamtools,
+    DSS,
+    bsseq,
+    BiocParallel,
+    methods,
+    stats,
+    utils
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+Config/testthat/edition: 3
+VignetteBuilder: knitr
+biocViews: DNAMethylation, DifferentialMethylation, Sequencing, WholeGenome

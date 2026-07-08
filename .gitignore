@@ -1,0 +1,20 @@
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+inst/doc
+/doc/
+/docs/
+*.o
+*.so
+*.dll
+
+# macOS
+.DS_Store
+
+# Editor / tooling
+.claude/
+.vscode/
+.idea/

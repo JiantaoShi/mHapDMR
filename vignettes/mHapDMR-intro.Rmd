@@ -1,0 +1,177 @@
+---
+title: "Getting started with mHapDMR"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with mHapDMR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+## Overview
+
+**mHapDMR** detects differentially methylated regions using the **M-score**
+derived from mHap-format sequencing data.
+
+M-score for region $j$, sample $d$ is defined as:
+
+$$M_{jd} = \frac{S_{jd}}{T_{jd}}, \quad
+  S_{jd} = \sum_t N_{tjd} Z_{tjd}, \quad
+  T_{jd} = \sum_t N_{tjd}$$
+
+where $N_{tjd}$ is the number of CpG sites on read $t$ and
+$Z_{tjd} \in \{0,1\}$ indicates whether the read carries at least one
+methylated site.
+
+Differential analysis is performed by DSS (Beta-Binomial model) after
+replacing the standard inputs $(m_{jd}, Y_{jd})$ with $(\kappa_{jd}, Y'_{jd})$:
+
+$$\kappa_{jd} = \frac{T_{jd}^2}{\sum_t N_{tjd}^2}, \qquad
+  Y'_{jd} = S_{jd} \cdot \frac{T_{jd}}{\sum_t N_{tjd}^2}$$
+
+so that $Y'_{jd}/\kappa_{jd} = M_{jd}$ exactly.
+
+## Installation
+
+```{r install}
+BiocManager::install(c("DSS", "GenomicRanges", "IRanges",
+                       "S4Vectors", "Rsamtools", "BiocParallel"))
+devtools::install_local("mHapDMR")
+```
+
+## Data requirements
+
+Both the mHap files and the CpG position file must be bgzipped and
+tabix-indexed:
+
+```bash
+bgzip sample.mhap && tabix -p bed sample.mhap.gz
+bgzip hg19_CpG.txt && tabix -s1 -b2 -e2 hg19_CpG.txt.gz
+```
+
+Verify indexes from R:
+
+```{r check}
+library(mHapDMR)
+check_tabix_index("sample.mhap.gz")
+check_tabix_index("hg19_CpG.gz")
+```
+
+## Quick start — full pipeline
+
+```{r quickstart}
+library(mHapDMR)
+library(GenomicRanges)
+
+# Analysis regions (rGR)
+rGR <- GRanges(
+  seqnames = c("chr1", "chr1", "chr2"),
+  ranges   = IRanges(start = c(1000L, 5000L, 2000L),
+                     end   = c(1200L, 5300L, 2400L))
+)
+
+# Named mHap files — names become sample IDs
+mhap_files <- c(
+  Control1 = "data/ctrl1.mhap.gz",
+  Control2 = "data/ctrl2.mhap.gz",
+  Tumor1   = "data/tumor1.mhap.gz",
+  Tumor2   = "data/tumor2.mhap.gz"
+)
+
+# Experimental design (row order matches names(mhap_files))
+design <- data.frame(
+  group     = c("Control", "Control", "Tumor", "Tumor"),
+  row.names = names(mhap_files)
+)
+
+# Run the pipeline
+result <- mhap_dmr(
+  mhap_files = mhap_files,
+  cpg_file   = "ref/hg19_CpG.gz",
+  rGR        = rGR,
+  design     = design,
+  formula    = ~ group,
+  coef       = "groupTumor"
+)
+
+# Differential M-score results
+head(result$dml_result)
+
+# Significant regions (FDR < 0.05)
+subset(result$dml_result, fdrs < 0.05)
+```
+
+## Step-by-step usage
+
+The pipeline can also be run step by step, giving access to intermediate
+objects.
+
+### Step 1 — read mHap records for one region (mHapGR)
+
+```{r step1}
+# Single-interval GRanges (gr)
+gr <- GRanges("chr1", IRanges(1000L, 1200L))
+
+# mHapGR: one row per unique haplotype
+mHapGR <- read_mhap_gr("ctrl1.mhap.gz", "hg19_CpG.gz", gr)
+mHapGR          # ranges = read coordinates, mcols = count/ncpg/hap_str/is_methylated
+mHapGR$count    # haplotype counts
+mHapGR$ncpg     # CpG sites per read (in the region)
+```
+
+### Step 2 — compute M-score stats for all regions (rGR)
+
+```{r step2}
+rGR_ctrl1 <- mscore_region_stats("ctrl1.mhap.gz", "hg19_CpG.gz", rGR)
+
+# M-score and DSS parameters are stored as metadata columns
+rGR_ctrl1$mscore    # M-score per region
+rGR_ctrl1$kappa     # effective sample size (κ)
+rGR_ctrl1$Y_prime   # effective M-score numerator (Y')
+```
+
+By default only these summary statistics are kept. If you also need the raw
+per-region haplotypes, pass `keep_mhapgr = TRUE` — but note this retains one
+`GRanges` per region, which is memory-intensive for large region sets across
+many samples, so leave it off for genome-wide analyses.
+
+```{r step2-keep, eval = FALSE}
+rGR_ctrl1 <- mscore_region_stats("ctrl1.mhap.gz", "hg19_CpG.gz", rGR,
+                                 keep_mhapgr = TRUE)
+mHapGR_list <- attr(rGR_ctrl1, "mHapGR_list")
+mHapGR_list[[1]]    # mHapGR for the first region
+```
+
+### Step 3 — build BSseq and run the test
+
+```{r step3}
+rGR_list <- list(
+  Control1 = mscore_region_stats("ctrl1.mhap.gz", "hg19_CpG.gz", rGR),
+  Control2 = mscore_region_stats("ctrl2.mhap.gz", "hg19_CpG.gz", rGR),
+  Tumor1   = mscore_region_stats("tumor1.mhap.gz", "hg19_CpG.gz", rGR),
+  Tumor2   = mscore_region_stats("tumor2.mhap.gz", "hg19_CpG.gz", rGR)
+)
+
+bsseq      <- build_bsseq_mscore(rGR_list, min_reads = 5L)
+dml_result <- run_dml_test(bsseq, design, formula = ~ group, coef = "groupTumor")
+head(dml_result)
+```
+
+## Parallel execution
+
+```{r parallel}
+library(BiocParallel)
+
+result <- mhap_dmr(
+  mhap_files = mhap_files,
+  cpg_file   = "ref/hg19_CpG.gz",
+  rGR        = rGR,
+  design     = design,
+  formula    = ~ group,
+  coef       = "groupTumor",
+  BPPARAM    = MulticoreParam(workers = 4L)
+)
+```
