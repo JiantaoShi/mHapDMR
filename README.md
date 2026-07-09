@@ -1,250 +1,95 @@
-# mHapDMR Tutorial — Differential M-score Analysis (ESCC Tumor vs Normal)
+# <center> Differential methylation analysis with mHpDMR <center/>
 
-This tutorial walks through a complete, reproducible run of **mHapDMR** using a
-public esophageal squamous-cell carcinoma (ESCC) dataset: three tumor and three
-normal samples. It follows the exact workflow in `test_example.R`.
+This tutorial walks through a complete, reproducible run of **mHapDMR** using a public esophageal squamous-cell carcinoma (ESCC) dataset: three tumor and three normal samples. For every genomic region you supply, mHapDMR reads the [mHap](https://jiantaoshi.github.io/mHap/) records, computes a per-sample M-score, and tests for a difference between two groups (here Tumor vs Normal) with [DSS](https://www.bioconductor.org/packages/release/bioc/html/DSS.html).
 
-**What the pipeline does.** For every genomic region you supply, mHapDMR reads
-the mHap haplotype records, computes a per-sample **M-score**, and tests for a
-difference between two groups (here Tumor vs Normal) with `DSS`.
-
-The M-score for region *j*, sample *d* is
-
-```
-M_jd = S_jd / T_jd ,   S_jd = Σ_t N_tjd · Z_tjd ,   T_jd = Σ_t N_tjd
-```
-
-where *N* is the number of CpG sites on read *t* and *Z ∈ {0,1}* indicates
-whether the read carries at least one methylated site. It captures read-level
-methylation heterogeneity that a bulk average would miss.
-
----
-
-## Contents
-
-1. [Input data & where to download it](#1-input-data--where-to-download-it)
-2. [Building the design table](#2-building-the-design-table)
-3. [Running the pipeline & interpreting the results](#3-running-the-pipeline--interpreting-the-results)
-
----
-
-## Prerequisites
+## Installation
 
 Install the package and its Bioconductor dependencies once:
 
-```r
-BiocManager::install(c("DSS", "bsseq", "GenomicRanges", "IRanges",
-                       "S4Vectors", "Rsamtools", "BiocParallel"))
-install.packages("data.table")          # for reading the region file
-devtools::install_local("mHapDMR")       # or install_github("<user>/mHapDMR")
+```R
+BiocManager::install(c("DSS", "bsseq", "GenomicRanges", "IRanges", "S4Vectors", "Rsamtools", "BiocParallel"))
+remotes::install_github("JiantaoShi/mHapDMR")
 ```
 
-You also need **tabix** (from HTSlib / `samtools`) on your system if you ever
-re-index your own files. The example files below are already indexed.
+You also need tabix (from HTSlib / samtools) on your system if you ever re-index your own files. The example files below are already indexed.
 
----
 
-## 1. Input data & where to download it
-
-Three kinds of input are required. All of them are **bgzip-compressed and
-tabix-indexed** — every `*.gz` has a companion `*.gz.tbi` that must sit next to
-it, because the pipeline queries the files by genomic coordinate.
-
-### 1.1 mHap files (6 samples + indexes)
-
-An **mHap** file stores read-level methylation as haplotype strings. Each line
-is one collapsed haplotype:
-
-| col | name     | meaning                                                              |
-|----:|----------|---------------------------------------------------------------------|
-| 1   | `chr`    | chromosome                                                          |
-| 2   | `start`  | position of the first CpG covered by the read                      |
-| 3   | `end`    | position of the last CpG covered by the read                       |
-| 4   | `hapStr` | methylation string, one character per CpG: `1` = methylated, `0` = unmethylated |
-| 5   | `count`  | number of identical reads collapsed into this haplotype            |
-| 6   | `strand` | `+` / `-` (optional; ignored by the M-score computation)           |
-
-```
-chr1  10497  10542  011  11  +
-chr1  10497  10542  111  65  +
-chr1  10497  10542  101   2  +
-```
-
-Download the 3 tumor + 3 normal samples (each `*.mhap.gz` **and** its
-`*.mhap.gz.tbi`):
-
-| sample       | group  | mHap file                                                                                       |
-|--------------|--------|-------------------------------------------------------------------------------------------------|
-| SRX8208812   | Tumor  | http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/tumor/SRX8208812.mhap.gz   |
-| SRX8208813   | Tumor  | http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/tumor/SRX8208813.mhap.gz   |
-| SRX8208814   | Tumor  | http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/tumor/SRX8208814.mhap.gz   |
-| SRX8208802   | Normal | http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/normal/SRX8208802.mhap.gz  |
-| SRX8208803   | Normal | http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/normal/SRX8208803.mhap.gz  |
-| SRX8208804   | Normal | http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/normal/SRX8208804.mhap.gz  |
-
-The index for each is the same URL with `.tbi` appended, e.g.
-`.../tumor/SRX8208812.mhap.gz.tbi`.
-
-> **Note:** on the data server the last index is mistakenly named
-> `SRX8208804.mhap.gz.tib` (`.tib`). The correct local filename must be
-> `SRX8208804.mhap.gz.tbi` — the download script below fixes this for you.
-
-### 1.2 CpG position file (hg19)
-
-A 3-column, BED-like file listing every CpG in the genome. mHapDMR uses it to
-map each haplotype character back to a genomic coordinate.
-
-```
-chr1  10469  10470
-chr1  10471  10472
-chr1  10484  10485
-```
-
-- `hg19_CpG.gz` — http://bioinformatics.sibcb.ac.cn/dataupload/iGenome/CpGs/hg19/hg19_CpG.gz  (~150 MB)
-- `hg19_CpG.gz.tbi` — http://bioinformatics.sibcb.ac.cn/dataupload/iGenome/CpGs/hg19/hg19_CpG.gz.tbi
-
-Use the CpG build (hg19) that matches the coordinates of your mHap files.
-
-### 1.3 Regions to test
-
-The regions can be any BED file; here we ship a tab-separated table,
-**`ESCC_DMR_subset.txt`** (150 regions), included in this repository under
-[`inst/extdata/ESCC_DMR_subset.txt`](inst/extdata/ESCC_DMR_subset.txt).
-
-```
-Chr     Start       End         Category
-chr19   13151273    13151813    Hyper
-chr16   87867030    87867838    Hyper
-...
-```
-
-| column     | meaning                                                                 |
-|------------|-------------------------------------------------------------------------|
-| `Chr`      | chromosome                                                               |
-| `Start`    | region start, **0-based** (BED convention)                              |
-| `End`      | region end                                                               |
-| `Category` | expected behaviour label — `Hyper` (hypermethylated in tumor), `Hypo` (hypomethylated in tumor), or `NC` (no change / negative control). 50 regions each. |
-
-`Category` is only there so we can *validate* the result at the end — it is not
-used by the model. Because `Start` is 0-based, we add 1 when building the
-`GRanges` (Section 3).
-
-### 1.4 Download everything (R)
-
-Run this from the directory where you want to work. It creates `mhap/` and
-`ref/` folders and skips files that already exist.
-
-```r
-dir.create("mhap", showWarnings = FALSE)
-dir.create("ref",  showWarnings = FALSE)
-
-options(timeout = 3600)          # the CpG file is large; raise the 60s default
-
-base <- "http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public"
-samples <- data.frame(
-  id     = c("SRX8208812", "SRX8208813", "SRX8208814",
-             "SRX8208802", "SRX8208803", "SRX8208804"),
-  subdir = c("tumor", "tumor", "tumor", "normal", "normal", "normal"),
-  stringsAsFactors = FALSE
-)
-
-for (i in seq_len(nrow(samples))) {
-  for (ext in c(".mhap.gz", ".mhap.gz.tbi")) {
-    url  <- sprintf("%s/%s/%s%s", base, samples$subdir[i], samples$id[i], ext)
-    dest <- file.path("mhap", paste0(samples$id[i], ext))
-    if (!file.exists(dest)) download.file(url, dest, mode = "wb")
-  }
-}
-
-# CpG positions (hg19) + index
-if (!file.exists("ref/hg19_CpG.gz"))
-  download.file(paste0("http://bioinformatics.sibcb.ac.cn/dataupload/",
-                       "iGenome/CpGs/hg19/hg19_CpG.gz"),
-                "ref/hg19_CpG.gz", mode = "wb")
-if (!file.exists("ref/hg19_CpG.gz.tbi"))
-  download.file(paste0("http://bioinformatics.sibcb.ac.cn/dataupload/",
-                       "iGenome/CpGs/hg19/hg19_CpG.gz.tbi"),
-                "ref/hg19_CpG.gz.tbi", mode = "wb")
-```
-
-<details>
-<summary>Shell alternative (wget)</summary>
-
-```bash
-mkdir -p mhap ref
-base=http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public
-
-for s in tumor/SRX8208812 tumor/SRX8208813 tumor/SRX8208814 \
-         normal/SRX8208802 normal/SRX8208803 normal/SRX8208804; do
-  id=${s#*/}
-  wget -O mhap/$id.mhap.gz     $base/$s.mhap.gz
-  wget -O mhap/$id.mhap.gz.tbi $base/$s.mhap.gz.tbi   # note: fixes the .tib typo
-done
-
-wget -O ref/hg19_CpG.gz     http://bioinformatics.sibcb.ac.cn/dataupload/iGenome/CpGs/hg19/hg19_CpG.gz
-wget -O ref/hg19_CpG.gz.tbi http://bioinformatics.sibcb.ac.cn/dataupload/iGenome/CpGs/hg19/hg19_CpG.gz.tbi
-```
-</details>
-
-After downloading, your working directory should look like this:
-
-```
-.
-├── mhap/
-│   ├── SRX8208812.mhap.gz   (+ SRX8208812.mhap.gz.tbi)
-│   ├── SRX8208813.mhap.gz   (+ .tbi)
-│   ├── SRX8208814.mhap.gz   (+ .tbi)
-│   ├── SRX8208802.mhap.gz   (+ .tbi)
-│   ├── SRX8208803.mhap.gz   (+ .tbi)
-│   └── SRX8208804.mhap.gz   (+ .tbi)
-├── ref/
-│   ├── hg19_CpG.gz
-│   └── hg19_CpG.gz.tbi
-└── ESCC_DMR_subset.txt
-```
-
-### 1.5 Verify the indexes
-
-Before running anything, confirm each `.gz` has its `.tbi` companion:
-
-```r
-library(mHapDMR)
-mhap_files <- list.files("mhap", pattern = "\\.mhap\\.gz$", full.names = TRUE)
-invisible(lapply(mhap_files, check_tabix_index))
-check_tabix_index("ref/hg19_CpG.gz")
-```
-
-`check_tabix_index()` returns `TRUE` silently if the index is present and stops
-with an informative error otherwise.
-
----
-
-## 2. Building the design table
-
-The design table tells mHapDMR which group each sample belongs to. Two rules:
-
-1. **`mhap_files` must be a *named* vector.** The names are the sample IDs.
-2. **`rownames(design)` must equal `names(mhap_files)`** — this is how a column
-   of the M-score matrix is linked to its group. Order matters only in that the
-   names must line up; keep them identical.
-
-```r
+```R
 library(mHapDMR)
 library(GenomicRanges)
 library(data.table)
+```
 
+## Input
+
+Three kinds of input are required. All of them are bgzip-compressed and tabix-indexed — every *.gz has a companion *.gz.tbi that must sit next to it, because the pipeline queries the files by genomic coordinate.
+
+### mHap files
+
+An [mHap](https://jiantaoshi.github.io/mHap/) file stores read-level methylation as haplotype strings. The mHap files used in this tutorial can be downloaded below:
+
+- [SRX8208812](http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/tumor/SRX8208812.mhap.gz)
+- [SRX8208813](http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/tumor/SRX8208813.mhap.gz)
+- [SRX8208814](http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/tumor/SRX8208814.mhap.gz)
+- [SRX8208802](http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/normal/SRX8208802.mhap.gz)
+- [SRX8208803](http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/normal/SRX8208803.mhap.gz)
+- [SRX8208804](http://bioinformatics.sibcb.ac.cn/dataupload/cancermhaps/mHap/public/normal/SRX8208804.mhap.gz)
+
+The index for each is the same URL with .tbi appended, e.g. .../tumor/SRX8208812.mhap.gz.tbi.
+
+### CpG position file
+A 3-column, BED-like file listing every CpG in the genome. mHapDMR uses it to map each haplotype character back to a genomic coordinate.
+
+- [hg19_CpG.gz](http://bioinformatics.sibcb.ac.cn/dataupload/iGenome/CpGs/hg19/hg19_CpG.gz)
+- [hg19_CpG.gz.tbi](http://bioinformatics.sibcb.ac.cn/dataupload/iGenome/CpGs/hg19/hg19_CpG.gz.tbi)
+
+Use the [annotation files](https://jiantaoshi.github.io/mHap/AnnotationFiles.html) that matches the coordinates of your mHap files.
+
+### Regions to test
+
+The regions can be any BED file; here we ship a tab-separated table, `ESCC_DMR_subset.txt` (150 regions), included in this repository under `inst/extdata/ESCC_DMR_subset.txt`.
+
+
+```R
+head(read.table('mHapDMR/inst/extdata/ESCC_DMR_subset.txt'))
+
+```
+
+
+<table class="dataframe">
+<caption>A data.frame: 6 × 4</caption>
+<thead>
+	<tr><th></th><th scope=col>V1</th><th scope=col>V2</th><th scope=col>V3</th><th scope=col>V4</th></tr>
+	<tr><th></th><th scope=col>&lt;chr&gt;</th><th scope=col>&lt;chr&gt;</th><th scope=col>&lt;chr&gt;</th><th scope=col>&lt;chr&gt;</th></tr>
+</thead>
+<tbody>
+	<tr><th scope=row>1</th><td>Chr  </td><td>Start    </td><td>End      </td><td>Category</td></tr>
+	<tr><th scope=row>2</th><td>chr19</td><td>13151273 </td><td>13151813 </td><td>Hyper   </td></tr>
+	<tr><th scope=row>3</th><td>chr16</td><td>87867030 </td><td>87867838 </td><td>Hyper   </td></tr>
+	<tr><th scope=row>4</th><td>chr19</td><td>39203688 </td><td>39203964 </td><td>Hyper   </td></tr>
+	<tr><th scope=row>5</th><td>chr18</td><td>12010537 </td><td>12011054 </td><td>Hyper   </td></tr>
+	<tr><th scope=row>6</th><td>chr3 </td><td>128068881</td><td>128069254</td><td>Hyper   </td></tr>
+</tbody>
+</table>
+
+
+
+'Category' is only there so we can validate the result at the end — it is not used by the model.
+
+## Building the design table
+
+
+```R
 # 1. Named vector of mHap files.  Names become the sample IDs.
 mhap_files <- c(
-  "mhap/SRX8208812.mhap.gz",   # tumor
-  "mhap/SRX8208813.mhap.gz",   # tumor
-  "mhap/SRX8208814.mhap.gz",   # tumor
-  "mhap/SRX8208802.mhap.gz",   # normal
-  "mhap/SRX8208803.mhap.gz",   # normal
-  "mhap/SRX8208804.mhap.gz"    # normal
+  "ESCC/mHap/SRX8208812.mhap.gz",   # tumor
+  "ESCC/mHap/SRX8208813.mhap.gz",   # tumor
+  "ESCC/mHap/SRX8208814.mhap.gz",   # tumor
+  "ESCC/mHap/SRX8208802.mhap.gz",   # normal
+  "ESCC/mHap/SRX8208803.mhap.gz",   # normal
+  "ESCC/mHap/SRX8208804.mhap.gz"    # normal
 )
 names(mhap_files) <- sub("\\.mhap\\.gz$", "", basename(mhap_files))
-names(mhap_files)
-#> [1] "SRX8208812" "SRX8208813" "SRX8208814" "SRX8208802" "SRX8208803" "SRX8208804"
 
 # 2. Design table — one row per sample, row names = sample IDs.
 design <- data.frame(
@@ -252,63 +97,71 @@ design <- data.frame(
   row.names = names(mhap_files)
 )
 design
-#>            group
-#> SRX8208812  Tumor
-#> SRX8208813  Tumor
-#> SRX8208814  Tumor
-#> SRX8208802 Normal
-#> SRX8208803 Normal
-#> SRX8208804 Normal
 ```
 
-**Choosing `coef`.** The model formula is `~ group`. R turns `group` into a
-factor with **alphabetically ordered** levels, so `Normal` becomes the
-reference and the coefficient that contrasts Tumor against Normal is called
-**`groupTumor`**. That is the string you pass to `coef`. A positive test
-statistic then means *higher M-score in Tumor*. If your labels were
-`case`/`control`, the coefficient would be `groupcase`, and so on.
 
-The design is not limited to two groups or to a single factor. You can add
-covariates and test any coefficient — for example a continuous variable:
+<table class="dataframe">
+<caption>A data.frame: 6 × 1</caption>
+<thead>
+	<tr><th></th><th scope=col>group</th></tr>
+	<tr><th></th><th scope=col>&lt;chr&gt;</th></tr>
+</thead>
+<tbody>
+	<tr><th scope=row>SRX8208812</th><td>Tumor </td></tr>
+	<tr><th scope=row>SRX8208813</th><td>Tumor </td></tr>
+	<tr><th scope=row>SRX8208814</th><td>Tumor </td></tr>
+	<tr><th scope=row>SRX8208802</th><td>Normal</td></tr>
+	<tr><th scope=row>SRX8208803</th><td>Normal</td></tr>
+	<tr><th scope=row>SRX8208804</th><td>Normal</td></tr>
+</tbody>
+</table>
 
-```r
-# Example only — a continuous covariate instead of a two-group contrast
-design <- data.frame(age = c(25, 45, 55, 40, 62, 70),
-                     row.names = names(mhap_files))
-# ... then formula = ~ age, coef = "age"
+
+
+### Choosing coef
+
+The model formula is `~ group`. R turns group into a factor with alphabetically ordered levels, so Normal becomes the reference and the coefficient that contrasts Tumor against Normal is called groupTumor. That is the string you pass to coef. A positive test statistic then means higher M-score in Tumor. If your labels were case/control, the coefficient would be groupcase, and so on. The design is not limited to two groups or to a single factor. You can add covariates and test any coefficient.
+
+## Differential methylation analysis
+
+### loading test regions
+
+
+```R
+path <- system.file("extdata", "ESCC_DMR_subset.txt", package = "mHapDMR")
+region <- fread(path, header = TRUE)
+rGR <- GRanges(seqnames = region$Chr, ranges = IRanges(start = region$Start + 1, end = region$End))
+rGR$Category <- region$Category
+names(rGR) <- paste0('r_', 1:length(rGR))
+rGR
 ```
 
----
 
-## 3. Running the pipeline & interpreting the results
+    GRanges object with 150 ranges and 1 metadata column:
+            seqnames              ranges strand |    Category
+               <Rle>           <IRanges>  <Rle> | <character>
+        r_1    chr19   13151274-13151813      * |       Hyper
+        r_2    chr16   87867031-87867838      * |       Hyper
+        r_3    chr19   39203689-39203964      * |       Hyper
+        r_4    chr18   12010538-12011054      * |       Hyper
+        r_5     chr3 128068882-128069254      * |       Hyper
+        ...      ...                 ...    ... .         ...
+      r_146     chr4 123715987-123717704      * |          NC
+      r_147    chr21   43800537-43800923      * |          NC
+      r_148     chr7   72843765-72843852      * |          NC
+      r_149     chr5 127219488-127220302      * |          NC
+      r_150     chr1 186546942-186547461      * |          NC
+      -------
+      seqinfo: 23 sequences from an unspecified genome; no seqlengths
 
-### 3.1 Define the regions
 
-Read `ESCC_DMR_subset.txt` and build a `GRanges`. Convert the 0-based BED
-`Start` to a 1-based `GRanges` start by adding 1:
+### main function
 
-```r
-bed <- fread("ESCC_DMR_subset.txt", header = TRUE)   # Chr, Start, End, Category
 
-rGR <- GRanges(
-  seqnames = bed$Chr,
-  ranges   = IRanges(start = bed$Start + 1L, end = bed$End)
-)
-rGR$Category <- bed$Category      # carried along for later validation
-length(rGR)
-#> [1] 150
-```
-
-### 3.2 Run `mhap_dmr()`
-
-`mhap_dmr()` is the single entry point that runs all four internal steps:
-per-sample M-score extraction → BSseq assembly → DSS test → coordinate
-annotation.
-
-```r
+```R
 results <- mhap_dmr(
   mhap_files = mhap_files,
-  cpg_file   = "ref/hg19_CpG.gz",
+  cpg_file   = "hg19_CpG.gz",
   rGR        = rGR,
   design     = design,
   formula    = ~ group,
@@ -316,147 +169,98 @@ results <- mhap_dmr(
   min_reads  = 1L,
   margin     = 150L,
   smoothing  = FALSE,
-  BPPARAM    = BiocParallel::MulticoreParam(workers = 4L),
+  BPPARAM    = BiocParallel::MulticoreParam(workers = 1L), ## set up workers to speed up
   verbose    = TRUE
 )
+names(results)
 ```
 
-Key arguments:
+    === Step 1: computing M-score statistics per sample ===
+    
+    [100/150] chr14:22359193-22359478
+    
+    [100/150] chr14:22359193-22359478
+    
+    [100/150] chr14:22359193-22359478
+    
+    [100/150] chr14:22359193-22359478
+    
+    [100/150] chr14:22359193-22359478
+    
+    [100/150] chr14:22359193-22359478
+    
+    === Step 2: building BSseq object ===
+    
+    Regions retained: 150 / 150
+    
+    === Step 3: differential M-score test (DSS) ===
+    
 
-| argument    | value here | meaning                                                                                 |
-|-------------|-----------|------------------------------------------------------------------------------------------|
-| `formula`   | `~ group` | model formula passed to DSS                                                               |
-| `coef`      | `"groupTumor"` | coefficient to test (see Section 2)                                                  |
-| `min_reads` | `1L`      | a region is kept only if **every** sample has ≥ this read depth there                     |
-| `margin`    | `150L`    | extra bp padded around each region when looking up CpG positions                          |
-| `smoothing` | `FALSE`   | passed to DSS; keep `FALSE` for region-level (block) tests                                |
-| `BPPARAM`   | 4 workers | sample-level parallelism. On Windows use `SnowParam(workers = 4L)`; `MulticoreParam` falls back to serial there. Reduce workers if memory is tight. |
-| `verbose`   | `TRUE`    | print per-region / per-step progress                                                     |
 
-You will see progress messages and finally a note such as
-`Regions retained: 150 / 150` (or fewer, if some regions had no coverage in a
-sample under `min_reads`).
+    Fitting DML model for CpG site: 
 
-### 3.3 What `results` contains
 
-`mhap_dmr()` returns a named list:
+<style>
+.list-inline {list-style: none; margin:0; padding: 0}
+.list-inline>li {display: inline-block}
+.list-inline>li:not(:last-child)::after {content: "\00b7"; padding: 0 .5ex}
+</style>
+<ol class=list-inline><li>'dml_result'</li><li>'bsseq'</li><li>'region_index'</li><li>'rGR_list'</li><li>'m_summary'</li></ol>
 
-| element        | class        | description                                                            |
-|----------------|--------------|------------------------------------------------------------------------|
-| `dml_result`   | `data.frame` | the DSS test result, annotated with region coordinates, sorted by p-value |
-| `m_summary`    | `matrix`     | group-mean M-score per region (one column per group)                   |
-| `bsseq`        | `BSseq`      | the object handed to DSS (κ as coverage, Y′ as methylation)            |
-| `region_index` | `data.frame` | maps the DSS `(chr, pos)` key back to `region_id`/`start`/`end`        |
-| `rGR_list`     | named list   | per-sample `GRanges` carrying the raw M-score statistics               |
 
-The main table, `dml_result`, has these columns:
 
-| column      | meaning                                                                 |
-|-------------|-------------------------------------------------------------------------|
-| `region_id` | region identifier, `chr:start-end` (1-based)                            |
-| `chr`, `start`, `end` | original region coordinates                                   |
-| `pos`       | region midpoint — the internal DSS locus key                            |
-| `stat`      | DSS test statistic; **sign = direction** (positive ⇒ higher in Tumor)   |
-| `pvals`     | raw p-value                                                             |
-| `fdrs`      | Benjamini–Hochberg FDR (use this for significance)                     |
+### results
 
-### 3.4 Assemble a readable results table
 
-Attach the group-mean M-scores (and, for this example, the original `Category`
-label) to the test result. Rows of `m_summary` are keyed by `region_id`, so the
-join is a direct row lookup — this is exactly the pattern in `test_example.R`:
-
-```r
+```R
 res <- results$dml_result
-
-# group-mean M-scores (columns: Tumor, Normal)
-res <- data.frame(res, results$m_summary[res$region_id, ], row.names = NULL)
-
-# effect size on the M-score scale
-res$delta <- res$Tumor - res$Normal
-
-# bring back the expected-behaviour label for validation
-bed$region_id <- paste0(bed$Chr, ":", bed$Start + 1L, "-", bed$End)
-res$Category  <- bed$Category[match(res$region_id, bed$region_id)]
-
-head(res[, c("region_id", "Category", "Tumor", "Normal", "delta",
-             "stat", "pvals", "fdrs")], 10)
+head(res)
 ```
 
-Each row is one region. Read it as: `Tumor` and `Normal` are the mean M-scores
-in each group; `delta = Tumor − Normal` is the effect size; `stat` gives the
-signed significance and should share the sign of `delta`; `fdrs` is what you
-threshold on.
 
-### 3.5 Call significant regions
+<table class="dataframe">
+<caption>A data.frame: 6 × 8</caption>
+<thead>
+	<tr><th></th><th scope=col>region_id</th><th scope=col>chr</th><th scope=col>start</th><th scope=col>end</th><th scope=col>pos</th><th scope=col>stat</th><th scope=col>pvals</th><th scope=col>fdrs</th></tr>
+	<tr><th></th><th scope=col>&lt;chr&gt;</th><th scope=col>&lt;fct&gt;</th><th scope=col>&lt;int&gt;</th><th scope=col>&lt;int&gt;</th><th scope=col>&lt;int&gt;</th><th scope=col>&lt;dbl&gt;</th><th scope=col>&lt;dbl&gt;</th><th scope=col>&lt;dbl&gt;</th></tr>
+</thead>
+<tbody>
+	<tr><th scope=row>1</th><td>r_55</td><td>chr3 </td><td>179716475</td><td>179717697</td><td>179717086</td><td>-12.445317</td><td>1.482951e-35</td><td>2.224426e-33</td></tr>
+	<tr><th scope=row>2</th><td>r_53</td><td>chr7 </td><td>153355141</td><td>153355744</td><td>153355442</td><td>-10.445725</td><td>1.532791e-25</td><td>1.149593e-23</td></tr>
+	<tr><th scope=row>3</th><td>r_75</td><td>chr3 </td><td>179949384</td><td>179950193</td><td>179949788</td><td>-10.305598</td><td>6.647686e-25</td><td>3.323843e-23</td></tr>
+	<tr><th scope=row>4</th><td>r_67</td><td>chr14</td><td> 49875676</td><td> 49877568</td><td> 49876622</td><td>-10.276428</td><td>9.000187e-25</td><td>3.375070e-23</td></tr>
+	<tr><th scope=row>5</th><td>r_99</td><td>chr6 </td><td>127833825</td><td>127835103</td><td>127834464</td><td>-10.157850</td><td>3.057457e-24</td><td>9.172370e-23</td></tr>
+	<tr><th scope=row>6</th><td>r_64</td><td>chr8 </td><td>138371138</td><td>138371828</td><td>138371483</td><td> -9.891427</td><td>4.535176e-23</td><td>1.133794e-21</td></tr>
+</tbody>
+</table>
 
-```r
-sig <- subset(res, fdrs < 0.05)
-nrow(sig)
 
-# hypermethylated in tumor (gain of methylation)
-subset(sig, delta > 0)
 
-# hypomethylated in tumor (loss of methylation)
-subset(sig, delta < 0)
+
+```R
+m_summary <- results$m_summary
+head(m_summary)
 ```
 
-To keep the regions as a `GRanges` (e.g. for annotation or export), use the
-helper:
 
-```r
-dml_gr <- annotate_dml_result(results$dml_result, results$region_index,
-                              as_granges = TRUE)
-dml_gr[dml_gr$fdrs < 0.05]
+<table class="dataframe">
+<caption>A matrix: 6 × 2 of type dbl</caption>
+<thead>
+	<tr><th></th><th scope=col>Tumor</th><th scope=col>Normal</th></tr>
+</thead>
+<tbody>
+	<tr><th scope=row>chr19:13151274-13151813</th><td>0.9428430</td><td>0.5852567</td></tr>
+	<tr><th scope=row>chr16:87867031-87867838</th><td>0.9939556</td><td>0.7107815</td></tr>
+	<tr><th scope=row>chr19:39203689-39203964</th><td>0.9383133</td><td>0.5466225</td></tr>
+	<tr><th scope=row>chr18:12010538-12011054</th><td>0.9556178</td><td>0.6106748</td></tr>
+	<tr><th scope=row>chr3:128068882-128069254</th><td>0.9856147</td><td>0.7172536</td></tr>
+	<tr><th scope=row>chr20:35827353-35827866</th><td>0.9903759</td><td>0.6768616</td></tr>
+</tbody>
+</table>
+
+
+
+
+```R
+
 ```
-
-### 3.6 Validate against the `Category` labels
-
-Because our example regions come pre-labelled, we can confirm the pipeline
-behaves as expected. A correct run should show:
-
-- **`Hyper`** regions → `delta > 0` (Tumor > Normal) and mostly significant,
-- **`Hypo`** regions → `delta < 0` (Tumor < Normal) and mostly significant,
-- **`NC`** regions → `delta ≈ 0` and mostly **non**-significant.
-
-```r
-res$sig <- res$fdrs < 0.05
-
-# median effect size per category — sign should match the label
-aggregate(delta ~ Category, data = res, FUN = median)
-
-# significant vs. non-significant, per category
-table(Category = res$Category, significant = res$sig)
-```
-
-If `Hyper` sits at a positive median `delta`, `Hypo` at a negative one, and `NC`
-near zero with few significant calls, the M-score DMR analysis is working as
-intended. From there, swap in your own regions and design table to run the same
-analysis on any two-group (or covariate) comparison.
-
----
-
-## Appendix — running the steps manually
-
-`mhap_dmr()` is a thin wrapper. If you want the intermediate objects, the same
-analysis unrolls to:
-
-```r
-# 1. per-sample M-score statistics over all regions
-rGR_list <- lapply(mhap_files, mscore_region_stats,
-                   cpg_file = "ref/hg19_CpG.gz", rGR = rGR)
-names(rGR_list) <- names(mhap_files)
-
-# 2. assemble a BSseq object via the kappa / Y' substitution
-built <- build_bsseq_mscore(rGR_list, min_reads = 1L)
-
-# 3. differential test with DSS
-dml_raw <- run_dml_test(built$bsseq, design,
-                        formula = ~ group, coef = "groupTumor")
-
-# 4. restore region coordinates
-dml_result <- annotate_dml_result(dml_raw, built$region_index)
-```
-
-See `?mhap_dmr`, `?mscore_region_stats`, and `?build_bsseq_mscore` for full
-argument documentation.
