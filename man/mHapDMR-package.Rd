@@ -38,6 +38,6 @@ so that \eqn{Y'_{jd} / \kappa_{jd} = M_{jd}} exactly.
 }
 
 \author{
-\strong{Maintainer}: Jiantao Jiang \email{jiang@example.com}
+\strong{Maintainer}: Jiantao Shi \email{jtshi@cmpt.ac.cn}
 
 }
