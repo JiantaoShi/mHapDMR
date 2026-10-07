@@ -77,7 +77,8 @@ annotate_dml_result <- function(dml_result, region_index, as_granges = FALSE) {
 #' @param formula    Model formula (default \code{~ group}).
 #' @param coef       Coefficient to test (default \code{"groupTumor"}).
 #' @param min_reads  Minimum per-region read depth in all samples (default 1).
-#' @param margin     Extra bp for CpG position lookup (default 150).
+#' @param margin     Extra bp added to the CpG position lookup (default 150);
+#'   does not change the results (see \code{\link{mscore_region_stats}}).
 #' @param smoothing  Passed to DSS (default FALSE).
 #' @param BPPARAM    \code{BiocParallelParam} for sample-level parallelism.
 #' @param keep_mhapgr Retain raw per-region \code{GRanges} in each sample's

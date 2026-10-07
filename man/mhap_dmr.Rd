@@ -36,7 +36,8 @@ auto-generated as \code{chr:start-end}.}
 
 \item{min_reads}{Minimum per-region read depth in all samples (default 1).}
 
-\item{margin}{Extra bp for CpG position lookup (default 150).}
+\item{margin}{Extra bp added to the CpG position lookup (default 150);
+does not change the results (see \code{\link{mscore_region_stats}}).}
 
 \item{smoothing}{Passed to DSS (default FALSE).}
 

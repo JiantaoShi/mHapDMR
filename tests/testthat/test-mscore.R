@@ -123,3 +123,31 @@ test_that("build_bsseq_mscore rejects unnamed rGR_list", {
   )
   expect_error(build_bsseq_mscore(list(rGR)), "named list")
 })
+
+
+# ── region statistics: reads longer than the CpG lookup margin ────────────────
+
+test_that("mscore_region_stats keeps reads with CpGs beyond the margin", {
+  tmp <- tempfile("mhapdmr"); dir.create(tmp)
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  # CpGs every 200 bp; the region [450, 550] holds the CpG at 500
+  cpg_txt <- file.path(tmp, "cpg.txt")
+  writeLines(sprintf("chr1\t%d", c(100L, 300L, 500L, 700L)), cpg_txt)
+  # read 1 starts 350 bp before the region (CpGs 100, 300, 500; "1" at 500),
+  # read 2 (count 2) covers 500 and 700 ("0" at 500)
+  mhap_txt <- file.path(tmp, "x.mhap")
+  writeLines(c("chr1\t100\t500\t001\t1\t+", "chr1\t500\t700\t01\t2\t+"), mhap_txt)
+  cpg  <- Rsamtools::bgzip(cpg_txt, file.path(tmp, "cpg.gz"))
+  mhap <- Rsamtools::bgzip(mhap_txt, file.path(tmp, "x.mhap.gz"))
+  Rsamtools::indexTabix(cpg, seq = 1L, start = 2L, end = 2L)
+  Rsamtools::indexTabix(mhap, seq = 1L, start = 2L, end = 3L)
+  rGR <- GenomicRanges::GRanges("chr1", IRanges::IRanges(450L, 550L))
+  cols <- c("reads", "Nsum", "N2sum", "Sjd", "mscore", "kappa", "Y_prime")
+
+  s <- mscore_region_stats(mhap, cpg, rGR, verbose = FALSE)
+  expect_equal(unlist(as.data.frame(GenomicRanges::mcols(s))[1L, cols]),
+               c(reads = 3, Nsum = 3, N2sum = 3, Sjd = 1, mscore = 1 / 3, kappa = 3, Y_prime = 1))
+  g <- mscore_region_stats(mhap, cpg, rGR, verbose = FALSE, keep_mhapgr = TRUE)
+  expect_equal(as.data.frame(GenomicRanges::mcols(g))[, cols], as.data.frame(GenomicRanges::mcols(s))[, cols])
+  expect_equal(length(read_mhap_gr(mhap, cpg, rGR)), 2L)
+})

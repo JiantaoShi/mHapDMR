@@ -20,7 +20,11 @@ mscore_region_stats(
 
 \item{rGR}{A \code{GRanges} of analysis regions.}
 
-\item{margin}{Extra bp for CpG position lookup (default 150).}
+\item{margin}{Extra bp added to the CpG position lookup (default 150).
+The lookup always covers the region and the full span of every read
+overlapping it, so the margin does not change the results. (Before
+version 0.1.1, a read with CpGs farther than \code{margin} from the region
+failed the CpG-count check and was dropped.)}
 
 \item{verbose}{Print progress every 100 regions (default TRUE).}
 

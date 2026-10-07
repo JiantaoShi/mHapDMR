@@ -12,7 +12,9 @@
 chr, start, end, hapStr, count, and an optional strand.}
 
 \item{cpg_pos}{Integer vector of CpG positions (1-based, \strong{sorted
-ascending}) covering the region plus margin.}
+ascending}) covering the region and the full span of every read in
+\code{raw}; a read extending beyond them fails the CpG-count check and
+is dropped.}
 
 \item{region_start}{1-based inclusive analysis-region start.}
 

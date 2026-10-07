@@ -1,6 +1,6 @@
 Package: mHapDMR
 Title: Differential M-score Analysis from mHap Files Using DSS
-Version: 0.1.0
+Version: 0.1.1
 Authors@R: person("Jiantao", "Shi", email = "jtshi@cmpt.ac.cn",
     role = c("aut", "cre"))
 Description: Reads mHap-format sequencing files (bgzipped, tabix-indexed) and

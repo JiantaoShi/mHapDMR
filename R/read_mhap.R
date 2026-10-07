@@ -81,17 +81,20 @@
     region_start <- GenomicRanges::start(gr)
     region_end   <- GenomicRanges::end(gr)
 
-    cpg_pos <- .fetch_cpg_positions(cpg_file, chrom, region_start, region_end, margin)
-    if (length(cpg_pos) == 0L) return(list())
-
     query_gr <- GenomicRanges::GRanges(chrom, IRanges::IRanges(region_start, region_end))
     raw <- tryCatch(Rsamtools::scanTabix(mhap_file, param = query_gr)[[1L]], error = function(e) character(0L))
     if (length(raw) == 0L) return(list())
+    fields <- strsplit(raw, "\t", fixed = TRUE)
 
-    records <- lapply(raw, function(line) {
-        fields <- strsplit(line, "\t", fixed = TRUE)[[1L]]
-        .parse_mhap_record(fields, cpg_pos, region_start, region_end)
-    })
+    # CpGs over the region and the full span of every read, so that no read
+    # fails the CpG-count check by extending beyond the lookup window
+    h_start <- suppressWarnings(as.integer(vapply(fields, function(x) x[2L], "")))
+    h_end   <- suppressWarnings(as.integer(vapply(fields, function(x) x[3L], "")))
+    cpg_pos <- .fetch_cpg_positions(cpg_file, chrom, min(region_start, h_start, na.rm = TRUE),
+                                    max(region_end, h_end, na.rm = TRUE), margin)
+    if (length(cpg_pos) == 0L) return(list())
+
+    records <- lapply(fields, function(f) .parse_mhap_record(f, cpg_pos, region_start, region_end))
     Filter(Negate(is.null), records)
 }
 
@@ -109,7 +112,9 @@
 #' @param cpg_file  Path to CpG position file (.gz, bgzipped + tabix-indexed).
 #' @param gr        A single-interval \code{GRanges} (length 1) defining the
 #'                  query region.
-#' @param margin    Extra bp used when fetching CpG positions (default 150).
+#' @param margin    Extra bp added to the CpG position lookup (default 150).
+#'   The lookup always covers the region and the full span of every read
+#'   overlapping it, so the margin does not change the results.
 #' @return A \code{GRanges} object (\strong{mHapGR}) with one range per unique
 #'         haplotype and the following metadata columns:
 #'         \describe{

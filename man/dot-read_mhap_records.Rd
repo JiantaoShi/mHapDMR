@@ -14,7 +14,9 @@
 \item{gr}{A single-interval \code{GRanges} (length 1) defining the
 query region.}
 
-\item{margin}{Extra bp used when fetching CpG positions (default 150).}
+\item{margin}{Extra bp added to the CpG position lookup (default 150).
+The lookup always covers the region and the full span of every read
+overlapping it, so the margin does not change the results.}
 }
 \value{
 A list of parsed records (see \code{.parse_mhap_record}); empty list

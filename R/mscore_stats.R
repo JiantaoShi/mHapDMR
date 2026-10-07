@@ -74,17 +74,34 @@
 #'   (output of \code{Rsamtools::scanTabix(...)[[1]]}). Columns:
 #'   chr, start, end, hapStr, count, and an optional strand.
 #' @param cpg_pos      Integer vector of CpG positions (1-based, \strong{sorted
-#'   ascending}) covering the region plus margin.
+#'   ascending}) covering the region and the full span of every read in
+#'   \code{raw}; a read extending beyond them fails the CpG-count check and
+#'   is dropped.
 #' @param region_start 1-based inclusive analysis-region start.
 #' @param region_end   1-based inclusive analysis-region end.
 #' @return Same named numeric vector as \code{.mscore_from_mhapgr}.
 #' @keywords internal
 .mscore_streaming <- function(raw, cpg_pos, region_start, region_end) {
-    empty <- c(reads = 0, Nsum = 0, N2sum = 0, Sjd = 0,
-               mscore = NA_real_, kappa = NA_real_, Y_prime = NA_real_)
-    if (length(raw) == 0L || length(cpg_pos) == 0L) return(empty)
+    if (length(raw) == 0L || length(cpg_pos) == 0L) return(.mscore_empty())
+    cols <- .parse_mhap_lines(raw)
+    if (is.null(cols)) return(.mscore_empty())
+    .mscore_from_cols(cols, cpg_pos, region_start, region_end)
+}
 
-    # Parse columns 2-5 straight into typed vectors (col 1 skipped, 6+ flushed)
+#' @noRd
+.mscore_empty <- function() {
+    c(reads = 0, Nsum = 0, N2sum = 0, Sjd = 0,
+      mscore = NA_real_, kappa = NA_real_, Y_prime = NA_real_)
+}
+
+#' Parse raw mHap lines into start, end, haplotype and count vectors
+#'
+#' Columns 2-5 are read straight into typed vectors (column 1 skipped, 6+
+#' flushed); non-conforming lines fall back to \code{strsplit}. NULL if no
+#' line has five fields.
+#' @noRd
+.parse_mhap_lines <- function(raw) {
+    if (length(raw) == 0L) return(NULL)
     cols <- tryCatch(
         scan(text = raw, sep = "\t", quiet = TRUE, flush = TRUE,
              what = list(NULL, integer(), integer(), character(), integer())),
@@ -94,16 +111,23 @@
         # Robust fallback for any non-conforming lines
         fields <- strsplit(raw, "\t", fixed = TRUE)
         keepf  <- lengths(fields) >= 5L
-        if (!any(keepf)) return(empty)
-        fields  <- fields[keepf]
-        h_start <- as.integer(vapply(fields, `[`, "", 2L))
-        h_end   <- as.integer(vapply(fields, `[`, "", 3L))
-        hap_str <- vapply(fields, `[`, "", 4L)
-        count   <- as.integer(vapply(fields, `[`, "", 5L))
-    } else {
-        h_start <- cols[[2L]]; h_end <- cols[[3L]]
-        hap_str <- cols[[4L]]; count <- cols[[5L]]
+        if (!any(keepf)) return(NULL)
+        fields <- fields[keepf]
+        return(list(start = as.integer(vapply(fields, `[`, "", 2L)),
+                    end   = as.integer(vapply(fields, `[`, "", 3L)),
+                    hap   = vapply(fields, `[`, "", 4L),
+                    count = as.integer(vapply(fields, `[`, "", 5L))))
     }
+    list(start = cols[[2L]], end = cols[[3L]], hap = cols[[4L]], count = cols[[5L]])
+}
+
+#' Region statistics from parsed mHap columns (see .mscore_streaming)
+#' @noRd
+.mscore_from_cols <- function(cols, cpg_pos, region_start, region_end) {
+    empty <- .mscore_empty()
+    if (length(cpg_pos) == 0L) return(empty)
+    h_start <- cols$start; h_end <- cols$end
+    hap_str <- cols$hap;   count <- cols$count
 
     # CpG index span covered by each read's haplotype string (cpg_pos sorted)
     lo    <- findInterval(h_start - 1L, cpg_pos) + 1L  # first CpG idx >= h_start
@@ -143,7 +167,11 @@
 #' @param mhap_file Path to mHap file (.mhap.gz, bgzipped + tabix-indexed).
 #' @param cpg_file  Path to CpG position file (.gz, bgzipped + tabix-indexed).
 #' @param rGR       A \code{GRanges} of analysis regions.
-#' @param margin    Extra bp for CpG position lookup (default 150).
+#' @param margin    Extra bp added to the CpG position lookup (default 150).
+#'   The lookup always covers the region and the full span of every read
+#'   overlapping it, so the margin does not change the results. (Before
+#'   version 0.1.1, a read with CpGs farther than \code{margin} from the region
+#'   failed the CpG-count check and was dropped.)
 #' @param verbose   Print progress every 100 regions (default TRUE).
 #' @return The input \code{rGR} with additional metadata columns:
 #'   \describe{
@@ -203,12 +231,18 @@ mscore_region_stats <- function(mhap_file, cpg_file, rGR, margin = 150L, verbose
             stat_mat[i, ] <- .mscore_from_mhapgr(mHapGR_i)
         } else {
             # Streaming path: raw lines -> summary stats, nothing retained.
-            cpg_pos <- .fetch_cpg_positions(cpg_tf, seqn[i], starts[i], ends[i], margin)
-            if (length(cpg_pos) == 0L) { stat_mat[i, ] <- empty_stat; next }
+            # The CpGs are looked up over the region and the full span of
+            # every read overlapping it, so that no read fails the CpG-count
+            # check by extending beyond the lookup window.
             region_gr <- GenomicRanges::GRanges(seqn[i], IRanges::IRanges(starts[i], ends[i]))
             raw <- tryCatch(Rsamtools::scanTabix(mhap_tf, param = region_gr)[[1L]],
                             error = function(e) character(0L))
-            stat_mat[i, ] <- .mscore_streaming(raw, cpg_pos, starts[i], ends[i])
+            cols <- .parse_mhap_lines(raw)
+            if (is.null(cols)) { stat_mat[i, ] <- empty_stat; next }
+            lookup_start <- min(starts[i], cols$start, na.rm = TRUE)
+            lookup_end   <- max(ends[i], cols$end, na.rm = TRUE)
+            cpg_pos <- .fetch_cpg_positions(cpg_tf, seqn[i], lookup_start, lookup_end, margin)
+            stat_mat[i, ] <- .mscore_from_cols(cols, cpg_pos, starts[i], ends[i])
         }
     }
 
